@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
         const translate_c = b.addTranslateC(.{
             .root_source_file = b.path("src/darwin.h"),
             .target = target,
-            .optimize = optimize,
+            .optimize = optimize orelse .debug,
         });
 
         mod.addImport("darwin", translate_c.createModule());
@@ -28,4 +28,21 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+
+    const exe_bench = b.addExecutable(.{
+        .name = "draupnir-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "draupnir", .module = mod },
+            },
+        }),
+    });
+    b.installArtifact(exe_bench);
+
+    const bench_step = b.step("bench", "Run the benchmarks");
+    bench_step.dependOn(&exe_bench.step);
 }

@@ -6,7 +6,7 @@ const assert = std.debug.assert;
 const darwin = @import("darwin.zig");
 const posix = @import("posix.zig");
 
-const Ring = struct {
+pub const Ring = struct {
     regions: []align(std.heap.page_size_min) u8,
 
     io: Io,
