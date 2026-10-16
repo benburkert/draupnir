@@ -11,7 +11,7 @@ Draupnir is a fast, concurrent, thread-safe ring buffer with an
 `std.Io.Reader`/`std.Io.Writer` interface. It implements the [magic ring
 buffer](https://en.wikipedia.org/wiki/Circular_buffer#Optimization) pattern to
 provide a single contiguous slice for io interface buffers. Reading from and
-writing to an interface buffer is also lock-free.
+writing to an interface buffer does not require holding a lock.
 
 ```zig
 
@@ -57,7 +57,7 @@ zig fetch --save "git+https://codeberg.org/benburkert/draupnir"
 Create a dependency in your `build.zig`:
 
 ```zig
-const fuzzion = b.dependency("draupnir", .{
+const dep_draupnir = b.dependency("draupnir", .{
     .target = target,
     .optimize = optimize,
 });
@@ -66,7 +66,7 @@ const fuzzion = b.dependency("draupnir", .{
 And import the module in your test module:
 
 ```zig
-mod_tests.root_module.addImport("draupnir", dep_fuzzion.module("draupnir"));
+mod_tests.root_module.addImport("draupnir", dep_draupnir.module("draupnir"));
 ```
 
 ## Support
