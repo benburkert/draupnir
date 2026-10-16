@@ -1,14 +1,10 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const Translator = @import("translate_c").Translator;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-
-    const zig_ver = builtin.zig_version;
-    const optimize = if (zig_ver.major > 0 or zig_ver.minor > 17)
-        b.standardOptimizeOption(.{}) orelse .debug
-    else
-        b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
     const mod = b.addModule("draupnir", .{
         .root_source_file = b.path("src/root.zig"),
@@ -18,13 +14,14 @@ pub fn build(b: *std.Build) void {
     });
 
     if (target.result.os.tag.isDarwin()) {
-        const translate_c = b.addTranslateC(.{
-            .root_source_file = b.path("src/darwin.h"),
+        const translate_c = b.dependency("translate_c", .{});
+        const translator: Translator = .init(translate_c, .{
+            .c_source_file = b.path("src/darwin.h"),
             .target = target,
             .optimize = optimize,
         });
 
-        mod.addImport("darwin", translate_c.createModule());
+        mod.addImport("darwin", translator.mod);
     }
 
     const mod_tests = b.addTest(.{
