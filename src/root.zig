@@ -34,6 +34,7 @@ pub const Ring = struct {
             .reader = .{
                 .vtable = &.{
                     .stream = stream,
+                    .rebase = rebase,
                 },
                 .buffer = regions[0..0],
                 .seek = 0,
@@ -57,13 +58,27 @@ pub const Ring = struct {
         }
     }
 
+    fn rebase(r: *Io.Reader, capacity: usize) Io.Reader.RebaseError!void {
+        _ = capacity;
+
+        var self: *Ring = @fieldParentPtr("reader", r);
+        self.mutex.lock(self.io) catch return error.ReadFailed;
+        defer self.mutex.unlock(self.io);
+
+        self.compactReader();
+        self.reader.buffer.len += self.staged;
+        self.reader.end += self.staged;
+        self.staged = 0;
+
+        self.cond.signal(self.io);
+    }
+
     fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
         var self: *Ring = @fieldParentPtr("reader", r);
         self.mutex.lock(self.io) catch return error.ReadFailed;
         defer self.mutex.unlock(self.io);
 
         const capacity = self.regions.len >> 1;
-        const regions_start = @intFromPtr(self.regions.ptr);
 
         // block until readable space is available
         while (self.consumed + self.writer.buffer.len == capacity) {
@@ -77,14 +92,7 @@ pub const Ring = struct {
 
         // consume read bytes, shift to first region
         defer {
-            self.reader.buffer = self.reader.buffer[self.reader.seek..];
-            self.reader.end = self.reader.buffer.len;
-            self.consumed += self.reader.seek;
-            self.reader.seek = 0;
-
-            self.reader.buffer.ptr = @ptrFromInt(
-                regions_start + ((@intFromPtr(self.reader.buffer.ptr) - regions_start) % capacity),
-            );
+            self.compactReader();
             self.cond.signal(self.io);
         }
 
@@ -150,6 +158,20 @@ pub const Ring = struct {
         }
         return n;
     }
+
+    fn compactReader(self: *Ring) void {
+        const capacity = self.regions.len >> 1;
+        const regions_start = @intFromPtr(self.regions.ptr);
+
+        self.reader.buffer = self.reader.buffer[self.reader.seek..];
+        self.reader.end = self.reader.buffer.len;
+        self.consumed += self.reader.seek;
+        self.reader.seek = 0;
+
+        self.reader.buffer.ptr = @ptrFromInt(
+            regions_start + ((@intFromPtr(self.reader.buffer.ptr) - regions_start) % capacity),
+        );
+    }
 };
 
 test "basic" {
@@ -171,7 +193,7 @@ test "basic" {
     try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, &buf);
 }
 
-test "async" {
+test "concurrent" {
     const io = std.testing.io;
 
     const capacity = std.heap.pageSize();
@@ -181,7 +203,7 @@ test "async" {
     var source: [1 << 20]u8 = @splat(1);
     var sink: [1 << 20]u8 = undefined;
 
-    var write_future = io.async(Io.Writer.writeAll, .{ &ring.writer, &source });
+    var write_future = try io.concurrent(Io.Writer.writeAll, .{ &ring.writer, &source });
 
     try ring.reader.readSliceAll(&sink);
 
@@ -189,4 +211,41 @@ test "async" {
     try std.testing.expectEqual({}, write_future.result);
 
     try std.testing.expectEqualSlices(u8, &source, &sink);
+}
+
+test "128 MiB" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+
+    var ring: Ring = try .init(io, std.heap.pageSize());
+    defer ring.deinit() catch unreachable;
+
+    // read 128 MiB
+    var read_future = try io.concurrent(Io.Reader.readAllocAll, .{ &ring.reader, gpa, 128 << 20 });
+
+    for (0..128) |i| {
+        var data: [1 << 20]u8 = @splat(@intCast(i));
+        try ring.writer.writeAll(&data);
+    }
+
+    const result = try read_future.await(io);
+    defer gpa.free(result);
+
+    for (0..128) |i| {
+        const data: [1 << 20]u8 = @splat(@intCast(i));
+        try std.testing.expectEqualSlices(u8, &data, result[(i << 20)..((i + 1) << 20)]);
+    }
+}
+
+test "peek" {
+    const io = std.testing.io;
+
+    var ring: Ring = try .init(io, std.heap.pageSize());
+    defer ring.deinit() catch {};
+
+    try ring.writer.writeAll(&.{42});
+    try ring.writer.flush();
+
+    const buf = try ring.reader.peek(1);
+    try std.testing.expectEqual(42, buf[0]);
 }
