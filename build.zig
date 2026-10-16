@@ -1,8 +1,14 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+
+    const zig_ver = builtin.zig_version;
+    const optimize = if (zig_ver.major > 0 or zig_ver.minor > 17)
+        b.standardOptimizeOption(.{}) orelse .debug
+    else
+        b.standardOptimizeOption(.{});
 
     const mod = b.addModule("draupnir", .{
         .root_source_file = b.path("src/root.zig"),
@@ -15,7 +21,7 @@ pub fn build(b: *std.Build) void {
         const translate_c = b.addTranslateC(.{
             .root_source_file = b.path("src/darwin.h"),
             .target = target,
-            .optimize = optimize orelse .debug,
+            .optimize = optimize,
         });
 
         mod.addImport("darwin", translate_c.createModule());
@@ -24,6 +30,7 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
+
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const test_step = b.step("test", "Run tests");

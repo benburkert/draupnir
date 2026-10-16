@@ -1,7 +1,7 @@
 .{
     .name = .draupnir,
     .version = "0.0.1",
-    .minimum_zig_version = "0.18.0-dev.4+5a23bf4b2",
+    .minimum_zig_version = "0.17.0",
     .paths = .{""},
     .fingerprint = 0x9bac852286675494,
 }
