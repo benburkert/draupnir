@@ -249,3 +249,42 @@ test "peek" {
     const buf = try ring.reader.peek(1);
     try std.testing.expectEqual(42, buf[0]);
 }
+
+test "concurrent write and read" {
+    const io = std.testing.io;
+
+    var ring: Ring = try .init(io, std.heap.pageSize());
+    defer ring.deinit() catch unreachable;
+
+    const Tester = union(enum) {
+        read: std.Io.Reader.Error!void,
+        write: std.Io.Writer.Error!void,
+
+        const n = 1024;
+
+        pub fn doRead(r: *std.Io.Reader) std.Io.Reader.Error!void {
+            var buf: [n]u8 = undefined;
+            try r.readSliceAll(&buf);
+        }
+        pub fn doWrite(w: *std.Io.Writer) std.Io.Writer.Error!void {
+            var data: [n]u8 = @splat(1);
+            try w.writeAll(&data);
+            try w.flush();
+        }
+    };
+
+    const rounds = 64;
+    var select_buffer: [2]Tester = undefined;
+    var select: std.Io.Select(Tester) = .init(io, &select_buffer);
+
+    for (0..rounds) |_| {
+        try select.concurrent(.write, Tester.doWrite, .{&ring.writer});
+        try select.concurrent(.read, Tester.doRead, .{&ring.reader});
+        for (0..2) |_| {
+            switch (try select.await()) {
+                .read => |read| try read,
+                .write => |write| try write,
+            }
+        }
+    }
+}

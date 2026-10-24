@@ -41,6 +41,10 @@ try gpa.free(result);
   may change any time a method on the interface is called. Be sure to always
   check the size of the buffer before passing arguments that depend on a
   specific buffer size.
+* `draupnir.Ring` is a SPSC queue: only one reader and one writer can
+  read/write at a time (but a concurrent reader and writer is fine).
+  `std.Io.Reader` and `std.Io.Writer` hold mutable state and are not
+  thread-safe, so concurrent calls to the same interface are not supported.
 
 ## Requirements
 
