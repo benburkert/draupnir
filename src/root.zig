@@ -34,7 +34,7 @@ pub const Ring = struct {
             .reader = .{
                 .vtable = &.{
                     .stream = stream,
-                    .rebase = rebase,
+                    .rebase = rebaseReader,
                 },
                 .buffer = regions[0..0],
                 .seek = 0,
@@ -43,6 +43,7 @@ pub const Ring = struct {
             .writer = .{
                 .vtable = &.{
                     .drain = drain,
+                    .rebase = rebaseWriter,
                 },
                 .buffer = regions[0..capacity],
                 .end = 0,
@@ -58,9 +59,7 @@ pub const Ring = struct {
         }
     }
 
-    fn rebase(r: *Io.Reader, capacity: usize) Io.Reader.RebaseError!void {
-        _ = capacity;
-
+    fn rebaseReader(r: *Io.Reader, capacity: usize) Io.Reader.RebaseError!void {
         var self: *Ring = @fieldParentPtr("reader", r);
         self.mutex.lock(self.io) catch return error.ReadFailed;
         defer self.mutex.unlock(self.io);
@@ -69,8 +68,33 @@ pub const Ring = struct {
         self.reader.buffer.len += self.staged;
         self.reader.end += self.staged;
         self.staged = 0;
-
         self.cond.signal(self.io);
+
+        while (self.reader.buffer.len - self.reader.seek < capacity) {
+            self.cond.wait(self.io, &self.mutex) catch return error.ReadFailed;
+
+            self.reader.buffer.len += self.staged;
+            self.reader.end += self.staged;
+            self.staged = 0;
+        }
+    }
+
+    fn rebaseWriter(w: *Io.Writer, preserve: usize, capacity: usize) Io.Writer.Error!void {
+        var self: *Ring = @fieldParentPtr("writer", w);
+        self.mutex.lock(self.io) catch return error.WriteFailed;
+        defer self.mutex.unlock(self.io);
+
+        self.compactWriter(preserve);
+        self.writer.buffer.len += self.consumed;
+        self.consumed = 0;
+        self.cond.signal(self.io);
+
+        while (self.writer.buffer.len - self.writer.end < capacity) {
+            self.cond.wait(self.io, &self.mutex) catch return error.WriteFailed;
+
+            self.writer.buffer.len += self.consumed;
+            self.consumed = 0;
+        }
     }
 
     fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
@@ -172,6 +196,20 @@ pub const Ring = struct {
             regions_start + ((@intFromPtr(self.reader.buffer.ptr) - regions_start) % capacity),
         );
     }
+
+    fn compactWriter(self: *Ring, preserve: usize) void {
+        const capacity = self.regions.len >> 1;
+        const regions_start = @intFromPtr(self.regions.ptr);
+        const seek = self.writer.end -| preserve;
+
+        self.staged += seek;
+        self.writer.buffer = self.writer.buffer[seek..];
+        self.writer.end -= seek;
+
+        self.writer.buffer.ptr = @ptrFromInt(
+            regions_start + ((@intFromPtr(self.writer.buffer.ptr) - regions_start) % capacity),
+        );
+    }
 };
 
 test "basic" {
@@ -179,7 +217,7 @@ test "basic" {
 
     const capacity = std.heap.pageSize();
     var ring: Ring = try .init(io, capacity);
-    defer ring.deinit() catch {};
+    defer ring.deinit() catch unreachable;
 
     try std.testing.expectEqual(0, ring.reader.buffer.len);
     try std.testing.expectEqual(capacity, ring.writer.buffer.len);
@@ -198,7 +236,7 @@ test "concurrent" {
 
     const capacity = std.heap.pageSize();
     var ring: Ring = try .init(io, capacity);
-    defer ring.deinit() catch {};
+    defer ring.deinit() catch unreachable;
 
     var source: [1 << 20]u8 = @splat(1);
     var sink: [1 << 20]u8 = undefined;
@@ -241,13 +279,39 @@ test "peek" {
     const io = std.testing.io;
 
     var ring: Ring = try .init(io, std.heap.pageSize());
-    defer ring.deinit() catch {};
+    defer ring.deinit() catch unreachable;
 
     try ring.writer.writeAll(&.{42});
     try ring.writer.flush();
 
     const buf = try ring.reader.peek(1);
     try std.testing.expectEqual(42, buf[0]);
+}
+
+test "writer rebase with preserved bytes" {
+    const io = std.testing.io;
+    const capacity = std.heap.pageSize();
+
+    var ring: Ring = try .init(io, capacity);
+    defer ring.deinit() catch unreachable;
+
+    // fill the ring, then force a rebase that preserves the last byte
+    {
+        var initial: [capacity - 4]u8 = @splat(1);
+        try ring.writer.writeAll(&initial);
+        try ring.writer.flush();
+
+        var sink: [capacity - 4]u8 = undefined;
+        try ring.reader.readSliceAll(&sink);
+
+        try ring.writer.writeAll(&.{ 2, 3, 4, 5 });
+        try ring.writer.writeBytePreserve(2, 6);
+        try ring.writer.flush();
+    }
+
+    var result: [5]u8 = undefined;
+    try ring.reader.readSliceAll(&result);
+    try std.testing.expectEqualSlices(u8, &.{ 2, 3, 4, 5, 6 }, &result);
 }
 
 test "concurrent write and read" {
