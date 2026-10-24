@@ -1,0 +1,64 @@
+name: ci
+on:
+  push:
+    branches: ['**']
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: ${{ matrix.context }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            context: ci/linux-x86_64
+          - os: macos-15
+            context: ci/macos-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: post pending
+        continue-on-error: true
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+          SHA: ${{ github.sha }}
+          CONTEXT: ${{ matrix.context }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -n --arg c "$CONTEXT" --arg u "$RUN_URL" \
+            '{state:"pending",context:$c,description:"queued",target_url:$u}' \
+          | curl -fsS -X POST \
+              -H "Authorization: token $CODEBERG_TOKEN" \
+              -H "Content-Type: application/json" --data-binary @- \
+              "https://codeberg.org/api/v1/repos/${{ github.repository }}/statuses/$SHA"
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@v2.2.1
+      - run: zig build test --summary all
+      - run: zig build --summary all
+
+      - name: post final status
+        if: always()
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+          SHA: ${{ github.sha }}
+          CONTEXT: ${{ matrix.context }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT: ${{ job.status }}
+        run: |
+          case "$RESULT" in
+            success)   state=success; desc="tests passed" ;;
+            cancelled) state=error;   desc="cancelled" ;;
+            *)         state=failure; desc="tests failed" ;;
+          esac
+          jq -n --arg s "$state" --arg c "$CONTEXT" --arg d "$desc" --arg u "$RUN_URL" \
+            '{state:$s,context:$c,description:$d,target_url:$u}' \
+          | curl -fsS -X POST \
+              -H "Authorization: token $CODEBERG_TOKEN" \
+              -H "Content-Type: application/json" --data-binary @- \
+              "https://codeberg.org/api/v1/repos/${{ github.repository }}/statuses/$SHA"
