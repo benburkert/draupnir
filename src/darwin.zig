@@ -46,13 +46,48 @@ pub fn freeRegions(regions: []align(std.heap.page_size_min) u8) !void {
 const Kernel = struct {
     const c = @import("darwin");
 
+    const Error = error{
+        InvalidAddress,
+        PermissionDenied,
+        OutOfMemory,
+        InvalidArgument,
+        SystemResources,
+        MemoryFailure,
+        MemoryError,
+        Interrupted,
+        TimedOut,
+        Terminated,
+        Unsupported,
+        Unexpected,
+    };
+
     fn call(
         name: @EnumLiteral(),
         args: std.meta.ArgsTuple(@TypeOf(@field(c, @tagName(name)))),
-    ) !void {
+    ) Error!void {
         return switch (@call(.auto, @field(c, @tagName(name)), args)) {
-            0 => {},
-            else => |rc| std.debug.panic("unexpected darwin error: {d}", .{rc}),
+            c.KERN_SUCCESS => {},
+            c.KERN_INVALID_ADDRESS => error.InvalidAddress,
+            c.KERN_PROTECTION_FAILURE, c.KERN_NO_ACCESS, c.KERN_DENIED => error.PermissionDenied,
+            c.KERN_NO_SPACE => error.OutOfMemory,
+            c.KERN_INVALID_ARGUMENT, c.KERN_INVALID_VALUE => error.InvalidArgument,
+            c.KERN_RESOURCE_SHORTAGE => error.SystemResources,
+            c.KERN_MEMORY_FAILURE => error.MemoryFailure,
+            c.KERN_MEMORY_ERROR => error.MemoryError,
+            c.KERN_ABORTED, c.MACH_SEND_INTERRUPTED, c.MACH_RCV_INTERRUPTED => error.Interrupted,
+            c.KERN_OPERATION_TIMED_OUT, c.MACH_SEND_TIMED_OUT, c.MACH_RCV_TIMED_OUT => error.TimedOut,
+            c.KERN_TERMINATED => error.Terminated,
+            c.KERN_NOT_SUPPORTED => error.Unsupported,
+            else => |rc| unexpectedErrno(rc),
         };
+    }
+
+    // based on std.posix.unexpectedErrno
+    fn unexpectedErrno(rc: c.kern_return_t) !void {
+        if (std.options.unexpected_error_tracing) {
+            std.debug.print("unexpected mach error: {d}\n", .{rc});
+            std.debug.dumpCurrentStackTrace(.{});
+        }
+        return error.Unexpected;
     }
 };
