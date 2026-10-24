@@ -3,12 +3,7 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-
-    const zig_ver = builtin.zig_version;
-    const optimize = if (zig_ver.major > 0 or zig_ver.minor > 17)
-        b.standardOptimizeOption(.{}) orelse .debug
-    else
-        b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
     const mod = b.addModule("draupnir", .{
         .root_source_file = b.path("src/root.zig"),
